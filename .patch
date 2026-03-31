@@ -1,0 +1,99 @@
+From: Shaun Chokshi <shaunchokshi@pm.me>
+Date: 2026-03-31
+Subject: [PATCH] fix: make MarketplacePlugin model properties nullable for PHP 8.x compatibility
+
+The Leantime marketplace API returns null for several fields (e.g. excerpt,
+vendorId) that were declared as non-nullable typed properties in
+MarketplacePlugin.php. PHP 8.0+ strictly enforces typed property assignments
+and throws a TypeError on null assignment, causing an HTTP 500 for any
+marketplace interaction.
+
+This patch:
+1. Makes all API-sourced scalar properties nullable in MarketplacePlugin.php,
+   consistent with the four properties ($startingPrice, $calculatedMonthlyPrice,
+   $license, $rating) that were already correctly declared as ?string.
+2. Adds a defensive null coercion in Build.php::setValue() using ReflectionProperty
+   so all models hydrated from external API data are protected systemically.
+
+Confirmed broken on PHP 8.4 (bare-metal PHP-FPM) and PHP 8.x (Docker).
+PHP 7.x silently accepted null assignment, masking this bug.
+---
+ app/Domain/Plugins/Models/MarketplacePlugin.php | 28 ++++++++++----------
+ app/Core/Support/Build.php                      | 17 ++++++++++--
+ 2 files changed, 30 insertions(+), 15 deletions(-)
+
+diff --git a/app/Domain/Plugins/Models/MarketplacePlugin.php b/app/Domain/Plugins/Models/MarketplacePlugin.php
+index 0000001..0000002 100644
+--- a/app/Domain/Plugins/Models/MarketplacePlugin.php
++++ b/app/Domain/Plugins/Models/MarketplacePlugin.php
+@@ -6,34 +6,34 @@ namespace Leantime\Domain\Plugins\Models;
+ 
+ class MarketplacePlugin
+ {
+-    public string $identifier = '';
++    public ?string $identifier = '';
+ 
+-    public string $name = '';
++    public ?string $name = '';
+ 
+-    public string $excerpt = '';
++    public ?string $excerpt = '';
+ 
+-    public string $description = '';
++    public ?string $description = '';
+ 
+-    public string $imageUrl = '';
++    public ?string $imageUrl = '';
+ 
+-    public string $vendorDisplayName = '';
++    public ?string $vendorDisplayName = '';
+ 
+-    public int $vendorId = 0;
++    public ?int $vendorId = 0;
+ 
+-    public string $vendorEmail = '';
++    public ?string $vendorEmail = '';
+ 
+-    public string $marketplaceUrl = '';
++    public ?string $marketplaceUrl = '';
+ 
+-    public string $type = 'marketplace';
++    public ?string $type = 'marketplace';
+ 
+-    public string $marketplaceId = '';
++    public ?string $marketplaceId = '';
+ 
+-    public string $version = '';
++    public ?string $version = '';
+ 
+-    public string $icon = '';
++    public ?string $icon = '';
+ 
+diff --git a/app/Core/Support/Build.php b/app/Core/Support/Build.php
+index 0000003..0000004 100644
+--- a/app/Core/Support/Build.php
++++ b/app/Core/Support/Build.php
+@@ -126,7 +126,22 @@ class Build
+         if (method_exists($property, 'set'.ucfirst($key))) {
+             $property->{'set'.ucfirst($key)}($value);
+         } elseif (method_exists($this->object, 'set'.$key)) {
+             $property->{'set'.$key}($value);
+         } else {
+-            $property->$key = $value;
++            if ($value === null && property_exists($property, $key)) {
++                $reflection = new \ReflectionProperty($property, $key);
++                $type = $reflection->getType();
++                if ($type !== null && ! $type->allowsNull()) {
++                    $value = match ($type->getName()) {
++                        'string' => '',
++                        'int'    => 0,
++                        'float'  => 0.0,
++                        'bool'   => false,
++                        'array'  => [],
++                        default  => null,
++                    };
++                }
++            }
++            $property->$key = $value;
+         }
+     }
